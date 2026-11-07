@@ -1,0 +1,1 @@
+Rearm classic ESP32 UART RX idle interrupts while unread bytes remain
