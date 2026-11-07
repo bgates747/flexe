@@ -1,0 +1,83 @@
+--- a/src/flexe_session.c
++++ b/src/flexe_session.c
+@@ -1061,6 +1061,8 @@
+     cpu->aot_bitmap = old.aot_bitmap;
+     cpu->code_invalidate = old.code_invalidate;
+     cpu->code_invalidate_ctx = old.code_invalidate_ctx;
++    cpu->instruction_sync = old.instruction_sync;
++    cpu->instruction_sync_ctx = old.instruction_sync_ctx;
+     cpu->accelerated_blocks = old.accelerated_blocks;
+     cpu->record_branch_targets = old.record_branch_targets;
+     cpu->window_trace = old.window_trace;
+--- a/src/jit.c
++++ b/src/jit.c
+@@ -509,7 +509,7 @@
+                 }
+                 if (r == 1) return 0;  /* MOVSP — guarded architectural move */
+                 if (r == 2)
+-                    return xtensa_sync_encoding_valid(insn) ? 0 : 2;
++                    return xtensa_sync_encoding_valid(insn) && XT_T(insn) != 0u ? 0 : 2;
+                 if (r == 3) {
+                     /* The architectural window spill/fill vectors end in
+                      * RFWO/RFWU. They are self-contained block terminators;
+--- a/src/xtensa.c
++++ b/src/xtensa.c
+@@ -911,7 +911,7 @@
+                 else if (op2 >= 1 && op2 <= 3) kind = PD_LOGIC;
+                 else if (op2 != 0) kind = PD_ALU;
+                 else if (r == 6) kind = PD_RSIL;
+-                else if (r == 2 && xtensa_sync_encoding_valid(insn)) kind = PD_NOP;
++                else if (r == 2 && xtensa_sync_encoding_valid(insn)) kind = XT_T(insn) == 0u ? PD_SLOW : PD_NOP;
+                 else if (r >= 8 && r <= 11) kind = PD_ALU;
+                 else if (r == 0 && XT_M(insn) == 2 && XT_N(insn) == 0) kind = PD_RET;
+                 else if (r == 0 && XT_M(insn) == 2 && XT_N(insn) == 1) kind = PD_RETW;
+@@ -2186,10 +2186,10 @@
+                                            cpu->pc - 3u, 0);
+                     return false;
+                 }
+-                /* Fast mode has a single strongly ordered host timeline, so
+-                 * ISYNC/RSYNC/ESYNC/DSYNC/EXTW/MEMW/EXCW need no additional
+-                 * operation here. Accurate schedulers will use these as
+-                 * synchronization boundaries. */
++                /* ISYNC is a translation-coherence boundary for code written
++                 * to executable RAM. Other barriers retain ordered-host semantics. */
++                if (XT_T(insn) == 0u && cpu->instruction_sync)
++                    cpu->instruction_sync(cpu, cpu->instruction_sync_ctx);
+                 break;
+             case 3: /* RFEI group */
+                 switch (t) {
+@@ -3646,7 +3646,11 @@
+                 cpu->ps = (cpu->ps & ~0xFu) | s;
+                 return true;
+             }
+-            if (r == 2 && xtensa_sync_encoding_valid(insn)) return true;
++            if (r == 2 && xtensa_sync_encoding_valid(insn)) {
++                if (XT_T(insn) == 0u && cpu->instruction_sync)
++                    cpu->instruction_sync(cpu, cpu->instruction_sync_ctx);
++                return true;
++            }
+             if (r >= 8 && r <= 11) {
+                 exec_qrst(cpu, insn); return true;
+             }
+--- a/src/xtensa.h
++++ b/src/xtensa.h
+@@ -1,5 +1,8 @@
+ #ifndef XTENSA_H
+ #define XTENSA_H
++
++/* Optional ISYNC observer API, for embedding translation-coherence policy. */
++#define XTENSA_HAS_INSTRUCTION_SYNC_OBSERVER 1
+ 
+ #include <stdint.h>
+ #include <stdbool.h>
+@@ -558,6 +561,10 @@
+     xtensa_code_invalidate_fn code_invalidate;
+     void *code_invalidate_ctx;
+ 
++    /* Optional ISYNC observer: host translation coherence for changed RAM. */
++    void (*instruction_sync)(xtensa_cpu_t *cpu, void *ctx);
++    void *instruction_sync_ctx;
++
+     /* Cold companion to pc_hook_bitmap. Kept at the end so adding an exact
+      * translation-time query does not disturb the interpreter's hot layout.
+      * It has its own context because pc_hook/pc_hook_ctx may be wrapped by a
