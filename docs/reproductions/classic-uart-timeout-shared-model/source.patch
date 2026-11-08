@@ -1,0 +1,50 @@
+--- a/src/target.c
++++ b/src/target.c
+@@ -134,6 +134,11 @@
+             .mem_rx_write_shift = 13u,
+             .date_offset = 0x78u,
+             .date_reset = 0x15122500u,
++            /* CONF1.RX_TOUT_THRHD, in eight baud bit-times on APB. */
++            .rx_timeout_threshold_offset = 0x24u,
++            .rx_timeout_threshold_mask = 0x7Fu,
++            .rx_timeout_threshold_shift = 24u,
++            .rx_timeout_unit_bits = 8u,
+         },
+         .uart = {
+             { .base = 0x3FF40000u, .interrupt_source = 34u,
+--- a/src/peripherals.c
++++ b/src/peripherals.c
+@@ -2840,6 +2840,7 @@
+                          ((clkdiv >> 20) & 0xFu);
+     uint64_t sclk_hz = 80000000u;
+     uint64_t sclk_div = 1u;
++    uint64_t unit_div = 1u;
+     if (ip->clk_conf_offset) {
+         uint32_t clk_conf = uart->shadow[ip->clk_conf_offset / 4u];
+         switch ((clk_conf >> 20) & 3u) {
+@@ -2848,15 +2849,23 @@
+         default: break;                      /* APB */
+         }
+         sclk_div = ((clk_conf >> 12) & 0xFFu) + 1u;
++    } else if ((p->target->capabilities & FLEXE_TARGET_CAP_ESP32_CLASSIC_PERIPHERALS) &&
++               !(uart->shadow[0x20u / 4u] & (1u << 27))) {
++        /* Classic REF_TICK is 1 MHz. ESP-IDF's eightfold threshold
++         * workaround makes each register unit one eighth of a baud bit.
++         * Keep that fraction until the final microsecond ceiling. */
++        sclk_hz = 1000000u;
++        bits = threshold;
++        unit_div = 8u;
+     }
+     uint64_t numerator, denominator;
+     if (divider16 == 0u) {          /* unprogrammed divider: assume 115200 */
+         numerator = bits * 1000000u;
+-        denominator = 115200u;
++        denominator = 115200u * unit_div;
+     } else {
+         /* bit time = divider16 * sclk_div / (16 * sclk_hz) seconds */
+         numerator = bits * divider16 * sclk_div * 1000000u;
+-        denominator = 16u * sclk_hz;
++        denominator = 16u * sclk_hz * unit_div;
+     }
+     uint64_t us = (numerator + denominator - 1u) / denominator;
+     return us ? us : 1u;
